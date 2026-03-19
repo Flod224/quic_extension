@@ -23,7 +23,7 @@ updates:
     versions:
     - ">= 2.a, < 3"
 - package-ecosystem: cargo
-  directory: "/tools/apps"
+  directory: "/apps"
   schedule:
     interval: daily
     time: "13:00"
@@ -42,7 +42,7 @@ updates:
     versions:
     - ">= 2.a, < 3"
 - package-ecosystem: cargo
-  directory: "/tools/qlog"
+  directory: "/qlog"
   schedule:
     interval: daily
     time: "13:00"
