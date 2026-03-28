@@ -8622,6 +8622,14 @@ impl<F: BufFactory> Connection<F> {
             },
 
             frame::Frame::DatagramHeader { .. } => unreachable!(),
+
+            // Role checks and state processing for these extension frames are
+            // implemented in a later milestone.
+            frame::Frame::CcIndication { .. } => (),
+
+            // Role checks and state processing for these extension frames are
+            // implemented in a later milestone.
+            frame::Frame::CcResume { .. } => (),
         }
 
         Ok(())

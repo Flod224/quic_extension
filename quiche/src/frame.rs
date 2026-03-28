@@ -46,6 +46,8 @@ pub const MAX_CRYPTO_OVERHEAD: usize = 8;
 pub const MAX_DGRAM_OVERHEAD: usize = 2;
 pub const MAX_STREAM_OVERHEAD: usize = 12;
 pub const MAX_STREAM_SIZE: u64 = 1 << 62;
+const CC_INDICATION_FRAME_TYPE: u64 = 0x24124758;
+const CC_RESUME_FRAME_TYPE: u64 = 0x24124759;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EcnCounts {
@@ -183,6 +185,18 @@ pub enum Frame {
 
     DatagramHeader {
         length: usize,
+    },
+
+    CcIndication {
+        epoch: u64,
+        cc_state: Vec<u8>,
+        hash: Vec<u8>,
+    },
+
+    CcResume {
+        epoch: u64,
+        cc_state: Vec<u8>,
+        hash: Vec<u8>,
     },
 }
 
@@ -330,6 +344,10 @@ impl Frame {
             0x1e => Frame::HandshakeDone,
 
             0x30 | 0x31 => parse_datagram_frame(frame_type, b)?,
+
+            CC_INDICATION_FRAME_TYPE | CC_RESUME_FRAME_TYPE => {
+                parse_cc_resume_like_frame(frame_type, b)?
+            },
 
             _ => return Err(Error::InvalidFrame),
         };
@@ -593,6 +611,34 @@ impl Frame {
             },
 
             Frame::DatagramHeader { .. } => (),
+
+            Frame::CcIndication {
+                epoch,
+                cc_state,
+                hash,
+            } => {
+                b.put_varint(CC_INDICATION_FRAME_TYPE)?;
+
+                b.put_varint(*epoch)?;
+                b.put_varint(cc_state.len() as u64)?;
+                b.put_varint(hash.len() as u64)?;
+                b.put_bytes(cc_state)?;
+                b.put_bytes(hash)?;
+            },
+
+            Frame::CcResume {
+                epoch,
+                cc_state,
+                hash,
+            } => {
+                b.put_varint(CC_RESUME_FRAME_TYPE)?;
+
+                b.put_varint(*epoch)?;
+                b.put_varint(cc_state.len() as u64)?;
+                b.put_varint(hash.len() as u64)?;
+                b.put_bytes(cc_state)?;
+                b.put_bytes(hash)?;
+            },
         }
 
         Ok(before - b.cap())
@@ -807,6 +853,32 @@ impl Frame {
                 1 + // frame type
                 2 + // length, always encode as 2-byte varint
                 *length // data
+            },
+
+            Frame::CcIndication {
+                epoch,
+                cc_state,
+                hash,
+            } => {
+                octets::varint_len(CC_INDICATION_FRAME_TYPE) +
+                    octets::varint_len(*epoch) +
+                    octets::varint_len(cc_state.len() as u64) +
+                    octets::varint_len(hash.len() as u64) +
+                    cc_state.len() +
+                    hash.len()
+            },
+
+            Frame::CcResume {
+                epoch,
+                cc_state,
+                hash,
+            } => {
+                octets::varint_len(CC_RESUME_FRAME_TYPE) +
+                    octets::varint_len(*epoch) +
+                    octets::varint_len(cc_state.len() as u64) +
+                    octets::varint_len(hash.len() as u64) +
+                    cc_state.len() +
+                    hash.len()
             },
         }
     }
@@ -1081,6 +1153,16 @@ impl Frame {
                     data: None,
                 }),
             },
+
+            Frame::CcIndication { .. } => QuicFrame::Unknown {
+                frame_type_bytes: Some(CC_INDICATION_FRAME_TYPE),
+                raw: None,
+            },
+
+            Frame::CcResume { .. } => QuicFrame::Unknown {
+                frame_type_bytes: Some(CC_RESUME_FRAME_TYPE),
+                raw: None,
+            },
         }
     }
 }
@@ -1248,6 +1330,32 @@ impl std::fmt::Debug for Frame {
             Frame::DatagramHeader { length } => {
                 write!(f, "DATAGRAM len={length}")?;
             },
+
+            Frame::CcIndication {
+                epoch,
+                cc_state,
+                hash,
+            } => {
+                write!(
+                    f,
+                    "CC_INDICATION epoch={epoch} cc_state_len={} hash_len={}",
+                    cc_state.len(),
+                    hash.len()
+                )?;
+            },
+
+            Frame::CcResume {
+                epoch,
+                cc_state,
+                hash,
+            } => {
+                write!(
+                    f,
+                    "CC_RESUME epoch={epoch} cc_state_len={} hash_len={}",
+                    cc_state.len(),
+                    hash.len()
+                )?;
+            },
         }
 
         Ok(())
@@ -1407,6 +1515,31 @@ fn parse_datagram_frame(ty: u64, b: &mut octets::Octets) -> Result<Frame> {
     Ok(Frame::Datagram {
         data: Vec::from(data.buf()),
     })
+}
+
+fn parse_cc_resume_like_frame(ty: u64, b: &mut octets::Octets) -> Result<Frame> {
+    let epoch = b.get_varint()?;
+    let cc_state_len = b.get_varint()? as usize;
+    let hash_len = b.get_varint()? as usize;
+
+    let cc_state = b.get_bytes(cc_state_len)?.to_vec();
+    let hash = b.get_bytes(hash_len)?.to_vec();
+
+    match ty {
+        CC_INDICATION_FRAME_TYPE => Ok(Frame::CcIndication {
+            epoch,
+            cc_state,
+            hash,
+        }),
+
+        CC_RESUME_FRAME_TYPE => Ok(Frame::CcResume {
+            epoch,
+            cc_state,
+            hash,
+        }),
+
+        _ => Err(Error::InvalidFrame),
+    }
 }
 
 #[cfg(test)]
@@ -1758,6 +1891,66 @@ mod tests {
         };
 
         assert_eq!(wire_len, 7);
+
+        let mut b = octets::Octets::with_slice(&d);
+        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short), Ok(frame));
+
+        let mut b = octets::Octets::with_slice(&d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT).is_ok());
+
+        let mut b = octets::Octets::with_slice(&d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Initial).is_err());
+
+        let mut b = octets::Octets::with_slice(&d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake).is_err());
+    }
+
+    #[test]
+    fn cc_indication() {
+        let mut d = [42; 128];
+
+        let frame = Frame::CcIndication {
+            epoch: 42,
+            cc_state: vec![0xaa, 0xbb, 0xcc],
+            hash: vec![0x01, 0x02, 0x03, 0x04],
+        };
+
+        let wire_len = {
+            let mut b = octets::OctetsMut::with_slice(&mut d);
+            frame.to_bytes(&mut b).unwrap()
+        };
+
+        assert_eq!(wire_len, frame.wire_len());
+
+        let mut b = octets::Octets::with_slice(&d);
+        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short), Ok(frame));
+
+        let mut b = octets::Octets::with_slice(&d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT).is_ok());
+
+        let mut b = octets::Octets::with_slice(&d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Initial).is_err());
+
+        let mut b = octets::Octets::with_slice(&d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake).is_err());
+    }
+
+    #[test]
+    fn cc_resume() {
+        let mut d = [42; 128];
+
+        let frame = Frame::CcResume {
+            epoch: 7,
+            cc_state: vec![0xde, 0xad, 0xbe, 0xef],
+            hash: vec![0x11, 0x22],
+        };
+
+        let wire_len = {
+            let mut b = octets::OctetsMut::with_slice(&mut d);
+            frame.to_bytes(&mut b).unwrap()
+        };
+
+        assert_eq!(wire_len, frame.wire_len());
 
         let mut b = octets::Octets::with_slice(&d);
         assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short), Ok(frame));
