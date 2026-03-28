@@ -185,6 +185,8 @@ pub struct TransportParams {
     pub retry_source_connection_id: Option<ConnectionId<'static>>,
     /// DATAGRAM frame extension parameter, if any.
     pub max_datagram_frame_size: Option<u64>,
+    /// Whether server congestion resume extension is enabled.
+    pub enable_server_congestion_resume: bool,
     /// Unknown peer transport parameters and values, if any.
     pub unknown_params: Option<UnknownTransportParameters>,
     // pub preferred_address: ...,
@@ -210,6 +212,7 @@ impl Default for TransportParams {
             initial_source_connection_id: None,
             retry_source_connection_id: None,
             max_datagram_frame_size: None,
+            enable_server_congestion_resume: false,
             unknown_params: Default::default(),
         }
     }
@@ -368,6 +371,10 @@ impl TransportParams {
 
                 0x0020 => {
                     tp.max_datagram_frame_size = Some(val.get_varint()?);
+                },
+
+                0x3f8e3dbaf71c3293 => {
+                    tp.enable_server_congestion_resume = true;
                 },
 
                 // Track unknown transport parameters specially.
@@ -553,6 +560,14 @@ impl TransportParams {
                 octets::varint_len(max_datagram_frame_size),
             )?;
             b.put_varint(max_datagram_frame_size)?;
+        }
+
+        if tp.enable_server_congestion_resume {
+            TransportParams::encode_param(
+                &mut b,
+                0x3f8e3dbaf71c3293,
+                0,
+            )?;
         }
 
         let out_len = b.off();
