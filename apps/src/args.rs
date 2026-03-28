@@ -51,6 +51,7 @@ pub struct CommonArgs {
     pub dgram_data: String,
     pub max_active_cids: u64,
     pub enable_active_migration: bool,
+    pub enable_server_congestion_resume: bool,
     pub max_field_section_size: Option<u64>,
     pub qpack_max_table_capacity: Option<u64>,
     pub qpack_blocked_streams: Option<u64>,
@@ -78,6 +79,7 @@ pub struct CommonArgs {
 /// --dgram-data DATA           DATAGRAM data to send.
 /// --max-active-cids NUM       Maximum number of active Connection IDs.
 /// --enable-active-migration   Enable active connection migration.
+/// --enable-server-congestion-resume   Enable server congestion resume extension.
 /// --max-field-section-size BYTES  Max size of uncompressed field section.
 /// --qpack-max-table-capacity BYTES  Max capacity of dynamic QPACK decoding.
 /// --qpack-blocked-streams STREAMS  Limit of blocked streams while decoding.
@@ -156,6 +158,9 @@ impl Args for CommonArgs {
 
         let enable_active_migration = args.get_bool("--enable-active-migration");
 
+        let enable_server_congestion_resume =
+            args.get_bool("--enable-server-congestion-resume");
+
         let max_field_section_size =
             if !args.get_str("--max-field-section-size").is_empty() {
                 Some(
@@ -217,6 +222,7 @@ impl Args for CommonArgs {
             dgram_data,
             max_active_cids,
             enable_active_migration,
+            enable_server_congestion_resume,
             max_field_section_size,
             qpack_max_table_capacity,
             qpack_blocked_streams,
@@ -247,6 +253,7 @@ impl Default for CommonArgs {
             dgram_data: "quack".to_string(),
             max_active_cids: 2,
             enable_active_migration: false,
+            enable_server_congestion_resume: false,
             max_field_section_size: None,
             qpack_max_table_capacity: None,
             qpack_blocked_streams: None,
@@ -288,6 +295,7 @@ Options:
   --disable-hystart        Disable HyStart++.
   --max-active-cids NUM    The maximum number of active Connection IDs we can support [default: 2].
   --enable-active-migration   Enable active connection migration.
+    --enable-server-congestion-resume   Enable server congestion resume extension.
   --perform-migration      Perform connection migration on another source port.
   -H --header HEADER ...   Add a request header.
   -n --requests REQUESTS   Send the given number of identical requests [default: 1].
@@ -468,6 +476,7 @@ Options:
   --disable-hystart           Disable HyStart++.
   --max-active-cids NUM       The maximum number of active Connection IDs we can support [default: 2].
   --enable-active-migration   Enable active connection migration.
+    --enable-server-congestion-resume   Enable server congestion resume extension.
   --max-field-section-size BYTES    Max size of uncompressed HTTP/3 field section. Default is unlimited.
   --qpack-max-table-capacity BYTES  Max capacity of QPACK dynamic table decoding. Any value other that 0 is currently unsupported.
   --qpack-blocked-streams STREAMS   Limit of streams that can be blocked while decoding. Any value other that 0 is currently unsupported.
