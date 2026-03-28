@@ -121,6 +121,7 @@ fn main() {
     config.set_initial_max_streams_uni(conn_args.max_streams_uni);
     config.set_disable_active_migration(!conn_args.enable_active_migration);
     config.set_active_connection_id_limit(conn_args.max_active_cids);
+    config.enable_server_congestion_resume(conn_args.enable_server_congestion_resume);
     config.set_initial_congestion_window_packets(
         usize::try_from(conn_args.initial_cwnd_packets).unwrap(),
     );
