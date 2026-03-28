@@ -1071,6 +1071,13 @@ impl Config {
         self.local_transport_params.disable_active_migration = v;
     }
 
+    /// Configures whether to advertise support for server congestion resume.
+    ///
+    /// The default value is `false`.
+    pub fn enable_server_congestion_resume(&mut self, v: bool) {
+        self.local_transport_params.enable_server_congestion_resume = v;
+    }
+
     /// Sets the congestion control algorithm used.
     ///
     /// The default value is `CongestionControlAlgorithm::CUBIC`.
@@ -1244,6 +1251,8 @@ impl Config {
     pub fn enable_track_unknown_transport_parameters(&mut self, size: usize) {
         self.track_unknown_transport_params = Some(size);
     }
+
+
 }
 
 /// Tracks the health of the tx_buffered value.
