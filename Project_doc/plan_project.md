@@ -60,12 +60,12 @@ Fichiers cibles:
 - [quiche/src/frame.rs](quiche/src/frame.rs)
 
 Checklist:
-- [ ] Types frames ajoutes (0x24124758, 0x24124759)
-- [ ] champs epoch/state/hash geres
-- [ ] from_bytes OK
-- [ ] to_bytes OK
-- [ ] wire_len OK
-- [ ] tests round-trip OK
+- [x] Types frames ajoutes (0x24124758, 0x24124759)
+- [x] champs epoch/state/hash geres
+- [x] from_bytes OK
+- [x] to_bytes OK
+- [x] wire_len OK
+- [x] tests round-trip OK
 
 ## Jalon 3 - Regles protocole
 
