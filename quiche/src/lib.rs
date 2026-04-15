@@ -8623,13 +8623,21 @@ impl<F: BufFactory> Connection<F> {
 
             frame::Frame::DatagramHeader { .. } => unreachable!(),
 
-            // Role checks and state processing for these extension frames are
-            // implemented in a later milestone.
-            frame::Frame::CcIndication { .. } => (),
+            // CC_INDICATION MUST be sent by the server. Receiving it on the
+            // server is a protocol violation.
+            frame::Frame::CcIndication { .. } => {
+                if self.is_server {
+                    return Err(Error::InvalidPacket);
+                }
+            },
 
-            // Role checks and state processing for these extension frames are
-            // implemented in a later milestone.
-            frame::Frame::CcResume { .. } => (),
+            // CC_RESUME MUST be sent by the client. Receiving it on the client
+            // is a protocol violation.
+            frame::Frame::CcResume { .. } => {
+                if !self.is_server {
+                    return Err(Error::InvalidPacket);
+                }
+            },
         }
 
         Ok(())

@@ -66,6 +66,7 @@ Checklist:
 - [x] to_bytes OK
 - [x] wire_len OK
 - [x] tests round-trip OK
+`cargo test -p quiche cc_indication`
 
 ## Jalon 3 - Regles protocole
 
@@ -76,11 +77,11 @@ Fichiers cibles:
 - [quiche/src/lib.rs](quiche/src/lib.rs)
 
 Checklist:
-- [ ] frames autorisees uniquement en 1-RTT
-- [ ] CC_INDICATION: serveur seulement
-- [ ] CC_RESUME: client seulement
-- [ ] violations -> PROTOCOL_VIOLATION
-- [ ] tests negatifs OK
+- [x] frames autorisees uniquement en 1-RTT
+- [x] CC_INDICATION: serveur seulement
+- [x] CC_RESUME: client seulement
+- [x] violations -> PROTOCOL_VIOLATION
+- [x] tests negatifs OK
 
 ## Jalon 4 - Logique fonctionnelle minimale
 

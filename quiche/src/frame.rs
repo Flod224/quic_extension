@@ -365,6 +365,9 @@ impl Frame {
             (packet::Type::ZeroRTT, Frame::PathResponse { .. }) => false,
             (packet::Type::ZeroRTT, Frame::RetireConnectionId { .. }) => false,
             (packet::Type::ZeroRTT, Frame::ConnectionClose { .. }) => false,
+            // Extension frames are only allowed in 1-RTT packets.
+            (packet::Type::ZeroRTT, Frame::CcIndication { .. }) => false,
+            (packet::Type::ZeroRTT, Frame::CcResume { .. }) => false,
 
             // ACK, CRYPTO and CONNECTION_CLOSE can be sent on all other packet
             // types.
@@ -1926,7 +1929,7 @@ mod tests {
         assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short), Ok(frame));
 
         let mut b = octets::Octets::with_slice(&d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT).is_ok());
+        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT).is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         assert!(Frame::from_bytes(&mut b, packet::Type::Initial).is_err());
@@ -1956,7 +1959,7 @@ mod tests {
         assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short), Ok(frame));
 
         let mut b = octets::Octets::with_slice(&d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT).is_ok());
+        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT).is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         assert!(Frame::from_bytes(&mut b, packet::Type::Initial).is_err());

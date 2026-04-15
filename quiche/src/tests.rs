@@ -6939,6 +6939,65 @@ fn prevent_optimistic_ack(
 }
 
 #[rstest]
+fn cc_indication_must_be_server_only(
+    #[values("cubic", "bbr2_gcongestion")] cc_algorithm_name: &str,
+) {
+    let mut pipe = test_utils::Pipe::new(cc_algorithm_name).unwrap();
+    pipe.handshake().unwrap();
+
+    let pkt_type = Type::Short;
+    let mut buf = [0; 2000];
+
+    // Client sends CC_INDICATION to server -> PROTOCOL_VIOLATION.
+    let frames = [frame::Frame::CcIndication {
+        epoch: 1,
+        cc_state: vec![0xaa],
+        hash: vec![0xbb],
+    }];
+
+    assert_eq!(
+        pipe.send_pkt_to_server(pkt_type, &frames, &mut buf).unwrap_err(),
+        Error::InvalidPacket
+    );
+
+    assert_eq!(
+        pipe.server.local_error.unwrap().error_code,
+        WireErrorCode::ProtocolViolation as u64
+    );
+}
+
+#[rstest]
+fn cc_resume_must_be_client_only(
+    #[values("cubic", "bbr2_gcongestion")] cc_algorithm_name: &str,
+) {
+    let mut pipe = test_utils::Pipe::new(cc_algorithm_name).unwrap();
+    pipe.handshake().unwrap();
+
+    let pkt_type = Type::Short;
+    let mut buf = [0; 2000];
+
+    // Server sends CC_RESUME to client -> PROTOCOL_VIOLATION.
+    let frames = [frame::Frame::CcResume {
+        epoch: 1,
+        cc_state: vec![0xaa],
+        hash: vec![0xbb],
+    }];
+
+    let written = test_utils::encode_pkt(&mut pipe.server, pkt_type, &frames, &mut buf)
+        .unwrap();
+
+    assert_eq!(
+        test_utils::recv_send(&mut pipe.client, &mut buf, written).unwrap_err(),
+        Error::InvalidPacket
+    );
+
+    assert_eq!(
+        pipe.client.local_error.unwrap().error_code,
+        WireErrorCode::ProtocolViolation as u64
+    );
+}
+
+#[rstest]
 fn app_limited_false_no_frame(
     #[values("cubic", "bbr2_gcongestion")] cc_algorithm_name: &str,
     #[values(true, false)] discard: bool,
