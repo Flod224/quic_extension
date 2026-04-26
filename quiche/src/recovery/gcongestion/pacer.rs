@@ -122,6 +122,12 @@ impl Pacer {
         self.sender.get_congestion_window()
     }
 
+    pub(crate) fn apply_resume_cwnd(
+        &mut self, cwnd: usize, rtt: std::time::Duration,
+    ) {
+        self.sender.apply_resume_cwnd(cwnd, rtt);
+    }
+
     pub fn on_packet_sent(
         &mut self, sent_time: Instant, bytes_in_flight: usize,
         packet_number: u64, bytes: usize, is_retransmissible: bool,

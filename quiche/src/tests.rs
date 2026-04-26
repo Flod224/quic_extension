@@ -6956,7 +6956,8 @@ fn cc_indication_must_be_server_only(
     }];
 
     assert_eq!(
-        pipe.send_pkt_to_server(pkt_type, &frames, &mut buf).unwrap_err(),
+        pipe.send_pkt_to_server(pkt_type, &frames, &mut buf)
+            .unwrap_err(),
         Error::InvalidPacket
     );
 
@@ -6983,8 +6984,9 @@ fn cc_resume_must_be_client_only(
         hash: vec![0xbb],
     }];
 
-    let written = test_utils::encode_pkt(&mut pipe.server, pkt_type, &frames, &mut buf)
-        .unwrap();
+    let written =
+        test_utils::encode_pkt(&mut pipe.server, pkt_type, &frames, &mut buf)
+            .unwrap();
 
     assert_eq!(
         test_utils::recv_send(&mut pipe.client, &mut buf, written).unwrap_err(),
@@ -6994,6 +6996,54 @@ fn cc_resume_must_be_client_only(
     assert_eq!(
         pipe.client.local_error.unwrap().error_code,
         WireErrorCode::ProtocolViolation as u64
+    );
+}
+
+#[rstest]
+fn cc_indication_is_stored_and_resumed(
+    #[values("cubic", "bbr2_gcongestion")] cc_algorithm_name: &str,
+) {
+    // First connection: server sends CC_INDICATION, client stores it.
+    let mut config = test_utils::Pipe::default_config(cc_algorithm_name).unwrap();
+    config.enable_server_congestion_resume(true);
+
+    let mut pipe = test_utils::Pipe::with_config(&mut config).unwrap();
+    pipe.handshake().unwrap();
+
+    // Ensure server has something to send, so a 1-RTT packet is emitted and we
+    // can piggy-back CC_INDICATION.
+    pipe.server.stream_send(1, b"x", false).unwrap();
+
+    // Trigger a 1-RTT send from server so CC_INDICATION can be emitted.
+    let flight = test_utils::emit_flight(&mut pipe.server).unwrap();
+    test_utils::process_flight(&mut pipe.client, flight).unwrap();
+
+    let stored = pipe.client.server_congestion_resume_state().unwrap();
+
+    // Second connection: client injects stored state and sends CC_RESUME once,
+    // server processes the first one.
+    let mut config2 =
+        test_utils::Pipe::default_config(cc_algorithm_name).unwrap();
+    config2.enable_server_congestion_resume(true);
+
+    let mut pipe2 = test_utils::Pipe::with_config(&mut config2).unwrap();
+    pipe2
+        .client
+        .set_server_congestion_resume_state(stored.clone())
+        .unwrap();
+    pipe2.handshake().unwrap();
+
+    // Ensure client has something to send, so a 1-RTT packet is emitted and we
+    // can piggy-back CC_RESUME.
+    pipe2.client.stream_send(0, b"y", false).unwrap();
+
+    // Trigger a 1-RTT send from client so CC_RESUME can be emitted.
+    let flight = test_utils::emit_flight(&mut pipe2.client).unwrap();
+    test_utils::process_flight(&mut pipe2.server, flight).unwrap();
+
+    assert_eq!(
+        pipe2.server.server_congestion_resume_applied_state(),
+        Some(stored)
     );
 }
 

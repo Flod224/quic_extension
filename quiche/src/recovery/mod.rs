@@ -319,6 +319,10 @@ pub trait RecoveryOps {
     fn get_next_release_time(&self) -> ReleaseDecision;
 
     fn gcongestion_enabled(&self) -> bool;
+
+    /// Applies a resumed congestion window from the server congestion resume
+    /// extension (best-effort; clamps to CC minimums).
+    fn apply_resume_cwnd(&mut self, cwnd_bytes: usize);
 }
 
 impl Recovery {

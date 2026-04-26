@@ -605,6 +605,9 @@ pub struct Config {
     track_unknown_transport_params: Option<usize>,
 
     initial_rtt: Duration,
+
+    /// Key for HMAC-SHA256 over `CC_INDICATION` / `CC_RESUME` payloads.
+    cc_resume_hmac_key: [u8; 32],
 }
 
 // See https://quicwg.org/base-drafts/rfc9000.html#section-15
@@ -683,6 +686,8 @@ impl Config {
 
             track_unknown_transport_params: None,
             initial_rtt: DEFAULT_INITIAL_RTT,
+
+            cc_resume_hmac_key: cc_resume::default_cc_resume_hmac_key(),
         })
     }
 
@@ -899,6 +904,15 @@ impl Config {
     /// The default value is `333`.
     pub fn set_initial_rtt(&mut self, v: Duration) {
         self.initial_rtt = v;
+    }
+
+    /// Sets the HMAC-SHA256 key used for server congestion resume
+    /// (`CC_INDICATION` / `CC_RESUME`) authentication.
+    ///
+    /// Production deployments should set an explicit secret; the built-in
+    /// default exists for testing only.
+    pub fn set_cc_resume_hmac_key(&mut self, key: [u8; 32]) {
+        self.cc_resume_hmac_key = key;
     }
 
     /// Sets the `max_idle_timeout` transport parameter, in milliseconds.
@@ -1251,8 +1265,6 @@ impl Config {
     pub fn enable_track_unknown_transport_parameters(&mut self, size: usize) {
         self.track_unknown_transport_params = Some(size);
     }
-
-
 }
 
 /// Tracks the health of the tx_buffered value.
@@ -1385,6 +1397,37 @@ where
 
     /// Total number of received DATAGRAM frames.
     dgram_recv_count: usize,
+
+    /// Last CC_INDICATION received from the peer (client-side storage).
+    cc_indication_last: Option<ServerCongestionState>,
+
+    /// CC_INDICATION to send (server-side advertisement).
+    cc_indication_to_send: Option<ServerCongestionState>,
+
+    /// CC_RESUME to send once (client-side resume).
+    cc_resume_to_send: Option<ServerCongestionState>,
+
+    /// Whether CC_RESUME has already been sent on this connection.
+    cc_resume_sent: bool,
+
+    /// The first CC_RESUME received and processed (server-side).
+    cc_resume_processed: Option<ServerCongestionState>,
+
+    /// HMAC key for server congestion resume (copied from [`Config`]).
+    cc_resume_hmac_key: [u8; 32],
+
+    /// Last `epoch` sent in `CC_INDICATION` (next frame uses `+ 1`).
+    cc_indication_epoch: u64,
+
+    /// Last successfully sent congestion snapshot (server).
+    cc_indication_last_adv: Option<CcAdvertiseSnapshot>,
+
+    /// Wall-clock time of last successful `CC_INDICATION` send (server).
+    cc_indication_last_emit: Option<Instant>,
+
+    /// Snapshot paired with [`Self::cc_indication_to_send`] until ACK-eliciting
+    /// send succeeds.
+    cc_indication_pending_meta: Option<CcAdvertiseSnapshot>,
 
     /// Total number of bytes received from the peer.
     rx_data: u64,
@@ -1956,7 +1999,134 @@ impl Default for QlogInfo {
     }
 }
 
+/// Congestion control state exchanged by the server congestion resume
+/// extension.
+///
+/// This corresponds to the payload of the `CC_INDICATION` and `CC_RESUME`
+/// frames.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerCongestionState {
+    /// Monotonically increasing timing information for the state.
+    pub epoch: u64,
+
+    /// Opaque congestion control state bytes.
+    pub cc_state: Vec<u8>,
+
+    /// Opaque cryptographic hash bytes.
+    pub hash: Vec<u8>,
+}
+
+/// Minimum interval between `CC_INDICATION` frames unless cwnd doubles.
+const CC_INDICATION_MIN_INTERVAL: Duration = Duration::from_millis(50);
+
+#[derive(Clone, Debug)]
+struct CcAdvertiseSnapshot {
+    cwnd: usize,
+
+    delivery_bps: u64,
+
+    rtt_ns: u64,
+}
+
 impl<F: BufFactory> Connection<F> {
+    fn server_congestion_resume_enabled(&self) -> bool {
+        self.local_transport_params.enable_server_congestion_resume &&
+            self.peer_transport_params.enable_server_congestion_resume
+    }
+
+    fn cc_snapshot_from_recovery(r: &recovery::Recovery) -> CcAdvertiseSnapshot {
+        CcAdvertiseSnapshot {
+            cwnd: r.cwnd(),
+            delivery_bps: r.delivery_rate().to_bits_per_second(),
+            rtt_ns: r.rtt().as_nanos() as u64,
+        }
+    }
+
+    fn cc_advertise_snapshot_changed(
+        prev: &CcAdvertiseSnapshot, cur: &CcAdvertiseSnapshot,
+    ) -> bool {
+        let cwnd_ref = prev.cwnd.max(cur.cwnd).max(1);
+        if prev.cwnd.abs_diff(cur.cwnd).saturating_mul(20) > cwnd_ref {
+            return true;
+        }
+
+        let rate_ref = prev.delivery_bps.max(cur.delivery_bps).max(1);
+        if prev
+            .delivery_bps
+            .abs_diff(cur.delivery_bps)
+            .saturating_mul(10) >
+            rate_ref
+        {
+            return true;
+        }
+
+        let rtt_ref = prev.rtt_ns.max(cur.rtt_ns).max(1);
+        prev.rtt_ns.abs_diff(cur.rtt_ns).saturating_mul(10) > rtt_ref
+    }
+
+    fn should_emit_cc_indication(
+        last_adv: &Option<CcAdvertiseSnapshot>, last_emit: Option<Instant>,
+        now: Instant, candidate: &CcAdvertiseSnapshot,
+    ) -> bool {
+        let Some(last) = last_adv else {
+            return true;
+        };
+
+        let Some(last_emit) = last_emit else {
+            return true;
+        };
+
+        let doubled = candidate.cwnd >= last.cwnd.saturating_mul(2);
+
+        if !doubled &&
+            now.saturating_duration_since(last_emit) <
+                CC_INDICATION_MIN_INTERVAL
+        {
+            return false;
+        }
+
+        Self::cc_advertise_snapshot_changed(last, candidate) || doubled
+    }
+
+    /// Returns the most recently received `CC_INDICATION` state (if any).
+    ///
+    /// This is intended to be called by the client at the end of a connection,
+    /// so it can provide the value to a subsequent connection using
+    /// [`set_server_congestion_resume_state()`].
+    pub fn server_congestion_resume_state(
+        &self,
+    ) -> Option<ServerCongestionState> {
+        self.cc_indication_last.clone()
+    }
+
+    /// Configures the `CC_RESUME` state to send once on this connection.
+    ///
+    /// The state is only sent when the server congestion resume extension is
+    /// negotiated (both endpoints advertised the transport parameter), and
+    /// only in 1-RTT packets.
+    ///
+    /// This is expected to be called on the client before the first 1-RTT
+    /// packet is sent.
+    pub fn set_server_congestion_resume_state(
+        &mut self, state: ServerCongestionState,
+    ) -> Result<()> {
+        if self.is_server {
+            return Err(Error::InvalidState);
+        }
+
+        self.cc_resume_to_send = Some(state);
+        Ok(())
+    }
+
+    /// Returns the first processed `CC_RESUME` state (if any).
+    ///
+    /// This is mainly useful for tests and debugging on the server.
+    pub fn server_congestion_resume_applied_state(
+        &self,
+    ) -> Option<ServerCongestionState> {
+        self.cc_resume_processed.clone()
+    }
+
     fn new(
         scid: &ConnectionId, retry_cids: Option<RetryConnectionIds>,
         client_dcid: Option<&ConnectionId>, local: SocketAddr, peer: SocketAddr,
@@ -2096,6 +2266,18 @@ impl<F: BufFactory> Connection<F> {
             recv_bytes: 0,
             acked_bytes: 0,
             lost_bytes: 0,
+
+            cc_indication_last: None,
+            cc_indication_to_send: None,
+            cc_resume_to_send: None,
+            cc_resume_sent: false,
+            cc_resume_processed: None,
+
+            cc_resume_hmac_key: config.cc_resume_hmac_key,
+            cc_indication_epoch: 0,
+            cc_indication_last_adv: None,
+            cc_indication_last_emit: None,
+            cc_indication_pending_meta: None,
 
             rx_data: 0,
             flow_control: flowcontrol::FlowControl::new(
@@ -4273,6 +4455,8 @@ impl<F: BufFactory> Connection<F> {
 
         let is_app_limited = self.delivery_rate_check_if_app_limited();
         let n_paths = self.paths.len();
+        let server_congestion_resume_enabled =
+            self.server_congestion_resume_enabled();
         let path = self.paths.get_mut(send_pid)?;
         let flow_control = &mut self.flow_control;
         let pkt_space = &mut self.pkt_num_spaces[epoch];
@@ -4604,6 +4788,92 @@ impl<F: BufFactory> Connection<F> {
         }
 
         if pkt_type == Type::Short && !is_closing && path.active() {
+            // Server congestion resume extension frames.
+            if server_congestion_resume_enabled {
+                if self.is_server {
+                    if self.cc_indication_to_send.is_none() &&
+                        (self.handshake_confirmed || self.handshake_completed)
+                    {
+                        let snap =
+                            Self::cc_snapshot_from_recovery(&path.recovery);
+
+                        if Self::should_emit_cc_indication(
+                            &self.cc_indication_last_adv,
+                            self.cc_indication_last_emit,
+                            now,
+                            &snap,
+                        ) {
+                            self.cc_indication_epoch =
+                                self.cc_indication_epoch.saturating_add(1);
+
+                            let epoch = self.cc_indication_epoch;
+
+                            let parsed = cc_resume::ParsedCcState {
+                                wall_time_ms: cc_resume::wall_time_ms_now(),
+                                cwnd: snap.cwnd as u64,
+                                rtt_ns: snap.rtt_ns,
+                                delivery_bps: snap.delivery_bps,
+                                cc_algorithm: self.recovery_config.cc_algorithm,
+                            };
+
+                            let cc_state = cc_resume::encode_cc_state_v1(&parsed);
+
+                            let hash = cc_resume::compute_cc_resume_mac(
+                                &self.cc_resume_hmac_key,
+                                epoch,
+                                &cc_state,
+                            );
+
+                            self.cc_indication_to_send =
+                                Some(ServerCongestionState {
+                                    epoch,
+                                    cc_state,
+                                    hash,
+                                });
+
+                            self.cc_indication_pending_meta = Some(snap);
+                        }
+                    }
+
+                    if let Some(state) = self.cc_indication_to_send.as_ref() {
+                        let frame = frame::Frame::CcIndication {
+                            epoch: state.epoch,
+                            cc_state: state.cc_state.clone(),
+                            hash: state.hash.clone(),
+                        };
+
+                        if push_frame_to_pkt!(b, frames, frame, left) {
+                            self.cc_indication_to_send = None;
+
+                            if let Some(meta) =
+                                self.cc_indication_pending_meta.take()
+                            {
+                                self.cc_indication_last_adv = Some(meta);
+                                self.cc_indication_last_emit = Some(now);
+                            }
+
+                            ack_eliciting = true;
+                            in_flight = true;
+                        }
+                    }
+                } else if !self.cc_resume_sent {
+                    if let Some(state) = self.cc_resume_to_send.as_ref() {
+                        let frame = frame::Frame::CcResume {
+                            epoch: state.epoch,
+                            cc_state: state.cc_state.clone(),
+                            hash: state.hash.clone(),
+                        };
+
+                        if push_frame_to_pkt!(b, frames, frame, left) {
+                            self.cc_resume_to_send = None;
+                            self.cc_resume_sent = true;
+                            ack_eliciting = true;
+                            in_flight = true;
+                        }
+                    }
+                }
+            }
+
             // Create HANDSHAKE_DONE frame.
             // self.should_send_handshake_done() but without the need to borrow
             if self.handshake_completed &&
@@ -8625,17 +8895,78 @@ impl<F: BufFactory> Connection<F> {
 
             // CC_INDICATION MUST be sent by the server. Receiving it on the
             // server is a protocol violation.
-            frame::Frame::CcIndication { .. } => {
+            frame::Frame::CcIndication {
+                epoch,
+                cc_state,
+                hash,
+            } => {
                 if self.is_server {
                     return Err(Error::InvalidPacket);
                 }
+
+                // Client stores the most recent advertised state.
+                self.cc_indication_last = Some(ServerCongestionState {
+                    epoch,
+                    cc_state,
+                    hash,
+                });
             },
 
             // CC_RESUME MUST be sent by the client. Receiving it on the client
             // is a protocol violation.
-            frame::Frame::CcResume { .. } => {
+            frame::Frame::CcResume {
+                epoch,
+                cc_state,
+                hash,
+            } => {
                 if !self.is_server {
                     return Err(Error::InvalidPacket);
+                }
+
+                // Server must only process the first incoming CC_RESUME and
+                // silently ignore further ones.
+                if self.cc_resume_processed.is_none() {
+                    if hash.len() != 32 {
+                        return Err(Error::InvalidPacket);
+                    }
+
+                    let parsed = match cc_resume::decode_cc_state_v1(&cc_state) {
+                        Ok(v) => v,
+
+                        Err(_) => return Err(Error::InvalidPacket),
+                    };
+
+                    if !cc_resume::cc_state_not_expired(
+                        parsed.wall_time_ms,
+                        cc_resume::wall_time_ms_now(),
+                    ) {
+                        return Err(Error::InvalidPacket);
+                    }
+
+                    if parsed.cc_algorithm != self.recovery_config.cc_algorithm {
+                        return Err(Error::InvalidPacket);
+                    }
+
+                    if !cc_resume::verify_cc_resume_mac(
+                        &self.cc_resume_hmac_key,
+                        epoch,
+                        &cc_state,
+                        &hash,
+                    ) {
+                        return Err(Error::InvalidPacket);
+                    }
+
+                    let cwnd_bytes =
+                        usize::try_from(parsed.cwnd).unwrap_or(usize::MAX);
+
+                    let path = self.paths.get_mut(recv_path_id)?;
+                    path.recovery.apply_resume_cwnd(cwnd_bytes);
+
+                    self.cc_resume_processed = Some(ServerCongestionState {
+                        epoch,
+                        cc_state,
+                        hash,
+                    });
                 }
             },
         }
@@ -9325,6 +9656,7 @@ pub use crate::error::Result;
 pub use crate::error::WireErrorCode;
 
 mod buffers;
+mod cc_resume;
 mod cid;
 mod crypto;
 mod dgram;

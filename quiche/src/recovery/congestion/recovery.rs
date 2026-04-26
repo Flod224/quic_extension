@@ -1034,6 +1034,14 @@ impl RecoveryOps for LegacyRecovery {
         }
     }
 
+    fn apply_resume_cwnd(&mut self, cwnd_bytes: usize) {
+        let min_cwnd = self
+            .max_datagram_size
+            .saturating_mul(crate::recovery::MINIMUM_WINDOW_PACKETS);
+        self.congestion.congestion_window = cwnd_bytes.max(min_cwnd);
+        self.congestion.send_quantum = self.congestion.congestion_window;
+    }
+
     fn gcongestion_enabled(&self) -> bool {
         false
     }

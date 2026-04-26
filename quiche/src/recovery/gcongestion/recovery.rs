@@ -1130,6 +1130,15 @@ impl RecoveryOps for GRecovery {
         self.pacer.get_next_release_time()
     }
 
+    fn apply_resume_cwnd(&mut self, cwnd_bytes: usize) {
+        let rtt = self
+            .min_rtt()
+            .unwrap_or_else(|| self.rtt())
+            .max(Duration::from_millis(1));
+
+        self.pacer.apply_resume_cwnd(cwnd_bytes, rtt);
+    }
+
     fn gcongestion_enabled(&self) -> bool {
         true
     }

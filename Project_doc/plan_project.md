@@ -88,10 +88,11 @@ Checklist:
 But: premier flux bout-en-bout.
 
 Checklist:
+- [ ] Choix d'implementation (etat CC, hash, expiration)
 - [ ] serveur emet CC_INDICATION
-- [ ] client stocke la derniere valeur
-- [ ] client envoie CC_RESUME au debut de connexion suivante
-- [ ] serveur traite seulement la premiere CC_RESUME
+- [ ] client stocke/met à jour la derniere valeur
+- [ ] client envoie CC_RESUME au debut de connexion suivante une seule fois
+- [ ] serveur accepte ou non de traiter seulement la premiere CC_RESUME
 
 ## Jalon 5 - Securite et robustesse
 
@@ -102,20 +103,6 @@ Checklist:
 - [ ] hash invalide ignore silencieusement
 - [ ] etat expire potentiellement ignore
 - [ ] tests attaques (forge, replay, multi-resume)
-
-## Trace execution (a remplir au fil de l'eau)
-
-Copier ce bloc pour chaque action importante:
-
-```text
-Date:
-Jalon:
-Commit:
-Changement:
-Commandes lancees:
-Resultat:
-Decision:
-```
 
 ## Mini checklist rapport final
 

@@ -497,6 +497,16 @@ impl BBRv2CongestionEvent {
 }
 
 impl BBRv2 {
+    pub(crate) fn apply_resume_cwnd(&mut self, cwnd: usize, rtt: Duration) {
+        let min_cwnd = self.mss.saturating_mul(2);
+        let capped = self.cwnd_limits.apply_limits(cwnd.max(min_cwnd));
+        self.cwnd = capped;
+
+        let eff_rtt = rtt.max(Duration::from_micros(1));
+        self.pacing_rate =
+            Bandwidth::from_bytes_and_time_delta(self.cwnd, eff_rtt);
+    }
+
     pub fn new(
         initial_congestion_window: usize, max_congestion_window: usize,
         max_segment_size: usize, smoothed_rtt: Duration,
