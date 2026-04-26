@@ -345,9 +345,8 @@ impl Frame {
 
             0x30 | 0x31 => parse_datagram_frame(frame_type, b)?,
 
-            CC_INDICATION_FRAME_TYPE | CC_RESUME_FRAME_TYPE => {
-                parse_cc_resume_like_frame(frame_type, b)?
-            },
+            CC_INDICATION_FRAME_TYPE | CC_RESUME_FRAME_TYPE =>
+                parse_cc_resume_like_frame(frame_type, b)?,
 
             _ => return Err(Error::InvalidFrame),
         };
@@ -862,27 +861,25 @@ impl Frame {
                 epoch,
                 cc_state,
                 hash,
-            } => {
+            } =>
                 octets::varint_len(CC_INDICATION_FRAME_TYPE) +
                     octets::varint_len(*epoch) +
                     octets::varint_len(cc_state.len() as u64) +
                     octets::varint_len(hash.len() as u64) +
                     cc_state.len() +
-                    hash.len()
-            },
+                    hash.len(),
 
             Frame::CcResume {
                 epoch,
                 cc_state,
                 hash,
-            } => {
+            } =>
                 octets::varint_len(CC_RESUME_FRAME_TYPE) +
                     octets::varint_len(*epoch) +
                     octets::varint_len(cc_state.len() as u64) +
                     octets::varint_len(hash.len() as u64) +
                     cc_state.len() +
-                    hash.len()
-            },
+                    hash.len(),
         }
     }
 

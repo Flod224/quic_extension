@@ -563,11 +563,7 @@ impl TransportParams {
         }
 
         if tp.enable_server_congestion_resume {
-            TransportParams::encode_param(
-                &mut b,
-                0x3f8e3dbaf71c3293,
-                0,
-            )?;
+            TransportParams::encode_param(&mut b, 0x3f8e3dbaf71c3293, 0)?;
         }
 
         let out_len = b.off();

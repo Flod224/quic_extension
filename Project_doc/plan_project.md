@@ -54,6 +54,7 @@ Critere de validation:
 
 ## Jalon 2 - Frames (parse/encode)
 
+- Commit: Add CC_INDICATION & CC_RESUME frames & a verification test
 But: ajouter CC_INDICATION et CC_RESUME au format spec.
 
 Fichiers cibles:
@@ -70,6 +71,7 @@ Checklist:
 
 ## Jalon 3 - Regles protocole
 
+Commit : enforce 1-RTT + role checks for CC_INDICATION/CC_RESUME
 But: appliquer les contraintes role + type de paquet.
 
 Fichiers cibles:
@@ -85,14 +87,16 @@ Checklist:
 
 ## Jalon 4 - Logique fonctionnelle minimale
 
+Commit : Implement authenticated CC resume flow and apply resumed cwnd across legacy and BBRv2 paths.
 But: premier flux bout-en-bout.
 
 Checklist:
-- [ ] Choix d'implementation (etat CC, hash, expiration)
-- [ ] serveur emet CC_INDICATION
-- [ ] client stocke/met à jour la derniere valeur
-- [ ] client envoie CC_RESUME au debut de connexion suivante une seule fois
-- [ ] serveur accepte ou non de traiter seulement la premiere CC_RESUME
+- [x] Choix d'implementation (etat CC : cwnd/rtt/rate, `HMAC-SHA256`, expiration : 7j)
+- [x] serveur emet CC_INDICATION (changement siginificatif) 
+    `cwnd change (+20%), rate (+10%), ou rtt (+10%), ou doublement, avec min 50ms entre deux`
+- [x] client stocke/met à jour la derniere valeur
+- [x] client envoie CC_RESUME au debut de connexion suivante une seule fois
+- [x] serveur accepte ou non de traiter seulement la premiere CC_RESUME
 
 ## Jalon 5 - Securite et robustesse
 

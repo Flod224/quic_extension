@@ -7022,8 +7022,7 @@ fn cc_indication_is_stored_and_resumed(
 
     // Second connection: client injects stored state and sends CC_RESUME once,
     // server processes the first one.
-    let mut config2 =
-        test_utils::Pipe::default_config(cc_algorithm_name).unwrap();
+    let mut config2 = test_utils::Pipe::default_config(cc_algorithm_name).unwrap();
     config2.enable_server_congestion_resume(true);
 
     let mut pipe2 = test_utils::Pipe::with_config(&mut config2).unwrap();
