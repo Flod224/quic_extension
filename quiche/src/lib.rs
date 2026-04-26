@@ -8926,47 +8926,42 @@ impl<F: BufFactory> Connection<F> {
                 // Server must only process the first incoming CC_RESUME and
                 // silently ignore further ones.
                 if self.cc_resume_processed.is_none() {
-                    if hash.len() != 32 {
-                        return Err(Error::InvalidPacket);
+                    if hash.len() == 32 {
+                        if let Ok(parsed) =
+                            cc_resume::decode_cc_state_v1(&cc_state)
+                        {
+                            let not_expired = cc_resume::cc_state_not_expired(
+                                parsed.wall_time_ms,
+                                cc_resume::wall_time_ms_now(),
+                            );
+
+                            let algo_matches =
+                                parsed.cc_algorithm ==
+                                    self.recovery_config.cc_algorithm;
+
+                            let hash_valid = cc_resume::verify_cc_resume_mac(
+                                &self.cc_resume_hmac_key,
+                                epoch,
+                                &cc_state,
+                                &hash,
+                            );
+
+                            if not_expired && algo_matches && hash_valid {
+                                let cwnd_bytes = usize::try_from(parsed.cwnd)
+                                    .unwrap_or(usize::MAX);
+
+                                let path = self.paths.get_mut(recv_path_id)?;
+                                path.recovery.apply_resume_cwnd(cwnd_bytes);
+
+                                self.cc_resume_processed =
+                                    Some(ServerCongestionState {
+                                        epoch,
+                                        cc_state,
+                                        hash,
+                                    });
+                            }
+                        }
                     }
-
-                    let parsed = match cc_resume::decode_cc_state_v1(&cc_state) {
-                        Ok(v) => v,
-
-                        Err(_) => return Err(Error::InvalidPacket),
-                    };
-
-                    if !cc_resume::cc_state_not_expired(
-                        parsed.wall_time_ms,
-                        cc_resume::wall_time_ms_now(),
-                    ) {
-                        return Err(Error::InvalidPacket);
-                    }
-
-                    if parsed.cc_algorithm != self.recovery_config.cc_algorithm {
-                        return Err(Error::InvalidPacket);
-                    }
-
-                    if !cc_resume::verify_cc_resume_mac(
-                        &self.cc_resume_hmac_key,
-                        epoch,
-                        &cc_state,
-                        &hash,
-                    ) {
-                        return Err(Error::InvalidPacket);
-                    }
-
-                    let cwnd_bytes =
-                        usize::try_from(parsed.cwnd).unwrap_or(usize::MAX);
-
-                    let path = self.paths.get_mut(recv_path_id)?;
-                    path.recovery.apply_resume_cwnd(cwnd_bytes);
-
-                    self.cc_resume_processed = Some(ServerCongestionState {
-                        epoch,
-                        cc_state,
-                        hash,
-                    });
                 }
             },
         }

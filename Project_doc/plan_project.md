@@ -103,10 +103,17 @@ Checklist:
 But: couvrir les cas attaques/erreurs demandes.
 
 Checklist:
-- [ ] hash recalcule cote serveur
-- [ ] hash invalide ignore silencieusement
-- [ ] etat expire potentiellement ignore
-- [ ] tests attaques (forge, replay, multi-resume)
+- [x] hash recalcule cote serveur
+- [x] hash invalide ignore silencieusement
+- [x] etat expire potentiellement ignore
+- [x] tests attaques (forge, replay, multi-resume)
+
+
+    `Comportement serveur durci pour CC_RESUME dans lib.rs:
+        hash invalide → ignoré silencieusement (plus de InvalidPacket)
+        état expiré → ignoré silencieusement
+        algo mismatch / state invalide / replay après 1er apply → ignorés sans fermer la connexion
+        hash toujours recalculé/vérifié côté serveur avant apply_resume_cwnd()`
 
 ## Mini checklist rapport final
 

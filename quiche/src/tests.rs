@@ -7047,6 +7047,151 @@ fn cc_indication_is_stored_and_resumed(
 }
 
 #[rstest]
+fn cc_resume_invalid_hash_is_ignored(
+    #[values("cubic", "bbr2_gcongestion")] cc_algorithm_name: &str,
+) {
+    // First connection: obtain a valid state from server CC_INDICATION.
+    let mut config = test_utils::Pipe::default_config(cc_algorithm_name).unwrap();
+    config.enable_server_congestion_resume(true);
+
+    let mut pipe = test_utils::Pipe::with_config(&mut config).unwrap();
+    pipe.handshake().unwrap();
+
+    pipe.server.stream_send(1, b"x", false).unwrap();
+    let flight = test_utils::emit_flight(&mut pipe.server).unwrap();
+    test_utils::process_flight(&mut pipe.client, flight).unwrap();
+
+    let mut forged = pipe.client.server_congestion_resume_state().unwrap();
+    forged.hash[0] ^= 0xff;
+
+    // Second connection: forged hash must be silently ignored by server.
+    let mut config2 = test_utils::Pipe::default_config(cc_algorithm_name).unwrap();
+    config2.enable_server_congestion_resume(true);
+
+    let mut pipe2 = test_utils::Pipe::with_config(&mut config2).unwrap();
+    pipe2.handshake().unwrap();
+
+    let frames = [frame::Frame::CcResume {
+        epoch: forged.epoch,
+        cc_state: forged.cc_state.clone(),
+        hash: forged.hash.clone(),
+    }];
+
+    let mut buf = [0; 2000];
+    assert!(
+        pipe2
+            .send_pkt_to_server(Type::Short, &frames, &mut buf)
+            .is_ok()
+    );
+
+    assert_eq!(pipe2.server.server_congestion_resume_applied_state(), None);
+}
+
+#[rstest]
+fn cc_resume_replay_is_ignored_after_first(
+    #[values("cubic", "bbr2_gcongestion")] cc_algorithm_name: &str,
+) {
+    // First connection: obtain a valid state from server CC_INDICATION.
+    let mut config = test_utils::Pipe::default_config(cc_algorithm_name).unwrap();
+    config.enable_server_congestion_resume(true);
+
+    let mut pipe = test_utils::Pipe::with_config(&mut config).unwrap();
+    pipe.handshake().unwrap();
+
+    pipe.server.stream_send(1, b"x", false).unwrap();
+    let flight = test_utils::emit_flight(&mut pipe.server).unwrap();
+    test_utils::process_flight(&mut pipe.client, flight).unwrap();
+
+    let stored = pipe.client.server_congestion_resume_state().unwrap();
+
+    // Second connection: same CC_RESUME frame is sent twice.
+    let mut config2 = test_utils::Pipe::default_config(cc_algorithm_name).unwrap();
+    config2.enable_server_congestion_resume(true);
+
+    let mut pipe2 = test_utils::Pipe::with_config(&mut config2).unwrap();
+    pipe2.handshake().unwrap();
+
+    let frames = [frame::Frame::CcResume {
+        epoch: stored.epoch,
+        cc_state: stored.cc_state.clone(),
+        hash: stored.hash.clone(),
+    }];
+
+    let mut buf = [0; 2000];
+    assert!(
+        pipe2
+            .send_pkt_to_server(Type::Short, &frames, &mut buf)
+            .is_ok()
+    );
+    assert_eq!(
+        pipe2.server.server_congestion_resume_applied_state(),
+        Some(stored.clone())
+    );
+
+    // Replay should be silently ignored (no error, no state change).
+    assert!(
+        pipe2
+            .send_pkt_to_server(Type::Short, &frames, &mut buf)
+            .is_ok()
+    );
+    assert_eq!(
+        pipe2.server.server_congestion_resume_applied_state(),
+        Some(stored)
+    );
+}
+
+#[rstest]
+fn cc_resume_expired_state_is_ignored(
+    #[values("cubic", "bbr2_gcongestion")] cc_algorithm_name: &str,
+) {
+    // First connection: obtain a valid state from server CC_INDICATION.
+    let mut config = test_utils::Pipe::default_config(cc_algorithm_name).unwrap();
+    config.enable_server_congestion_resume(true);
+
+    let mut pipe = test_utils::Pipe::with_config(&mut config).unwrap();
+    pipe.handshake().unwrap();
+
+    pipe.server.stream_send(1, b"x", false).unwrap();
+    let flight = test_utils::emit_flight(&mut pipe.server).unwrap();
+    test_utils::process_flight(&mut pipe.client, flight).unwrap();
+
+    let stored = pipe.client.server_congestion_resume_state().unwrap();
+
+    // Forge an expired, but MAC-valid state for client.
+    let mut parsed = cc_resume::decode_cc_state_v1(&stored.cc_state).unwrap();
+    parsed.wall_time_ms = 0;
+
+    let expired_cc_state = cc_resume::encode_cc_state_v1(&parsed);
+    let expired_hash = cc_resume::compute_cc_resume_mac(
+        &cc_resume::default_cc_resume_hmac_key(),
+        stored.epoch,
+        &expired_cc_state,
+    );
+
+    // Second connection: expired state must be silently ignored by server.
+    let mut config2 = test_utils::Pipe::default_config(cc_algorithm_name).unwrap();
+    config2.enable_server_congestion_resume(true);
+
+    let mut pipe2 = test_utils::Pipe::with_config(&mut config2).unwrap();
+    pipe2.handshake().unwrap();
+
+    let frames = [frame::Frame::CcResume {
+        epoch: stored.epoch,
+        cc_state: expired_cc_state,
+        hash: expired_hash,
+    }];
+
+    let mut buf = [0; 2000];
+    assert!(
+        pipe2
+            .send_pkt_to_server(Type::Short, &frames, &mut buf)
+            .is_ok()
+    );
+
+    assert_eq!(pipe2.server.server_congestion_resume_applied_state(), None);
+}
+
+#[rstest]
 fn app_limited_false_no_frame(
     #[values("cubic", "bbr2_gcongestion")] cc_algorithm_name: &str,
     #[values(true, false)] discard: bool,
