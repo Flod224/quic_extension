@@ -115,6 +115,17 @@ Checklist:
         algo mismatch / state invalide / replay après 1er apply → ignorés sans fermer la connexion
         hash toujours recalculé/vérifié côté serveur avant apply_resume_cwnd()`
 
+## Jalon 6 - Derivation de clé et obfuscation d'epoch
+Commit : `Master key, epoch obfuscation, derived key from epoch_obf, hash_512 computation`
+
+But: ajouter une couche de sécurité pour éviter les attaques par replay à grande échelle.
+
+Checklist:
+- [x] clé dérivée de master key + epoch obfusqué (HMAC-SHA256)
+- [x] epoch obfusqué dans CC_INDICATION (XOR avec masque dérivé du master key)
+- [x] serveur recalculant la clé dérivée à partir de l'epoch obfusqué pour vérifier le MAC
+- [x] tests d'attaque OK (epoch forge, replay)
+
 ## Mini checklist rapport final
 
 - [ ] Choix d'implementation (etat CC, hash, expiration)
