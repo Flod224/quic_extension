@@ -29,12 +29,13 @@
 
 use ring::digest;
 use ring::hmac;
+use octets;
 
 use crate::recovery::CongestionControlAlgorithm;
 use crate::Error;
 use crate::Result;
 
-/// Magic header for version 1 `cc_state` blobs.
+/// Magic header for `cc_state` blobs.
 const CC_STATE_MAGIC: &[u8; 4] = b"QCCR";
 
 /// Wire format version embedded in `cc_state`.
@@ -44,13 +45,37 @@ pub const CC_STATE_VERSION: u8 = 1;
 /// not used. **Deployable services should set an explicit key** via config.
 pub fn default_cc_resume_hmac_key() -> [u8; 32] {
     let d = digest::digest(
-        &digest::SHA256,
-        b"quiche cc resume default hmac v1 do not use in production",
+        &digest::SHA512,
+        b"quiche cc resume default hmac do not use in production",
     );
 
     let mut k = [0u8; 32];
-    k.copy_from_slice(d.as_ref());
+    k.copy_from_slice(&d.as_ref()[0..32]);
     k
+}
+/// Derives the XOR mask for obfuscating the epoch from the master key.
+fn epoch_mask(key: &[u8; 32]) -> u64 {
+    let sk = hmac::Key::new(hmac::HMAC_SHA512, key.as_slice());
+    let tag = hmac::sign(&sk, b"cc-resume-epoch");
+    u64::from_be_bytes(tag.as_ref()[0..8].try_into().unwrap()) &
+        octets::MAX_VAR_INT
+}
+
+/// Obfuscates the wire epoch using a reversible XOR mask.
+pub fn obfuscate_epoch(epoch: u64, key: &[u8; 32]) -> u64 {
+    (epoch & octets::MAX_VAR_INT) ^ epoch_mask(key)
+}
+
+/// Derives a per-epoch key from the master key and the obfuscated epoch.
+pub fn derive_cc_resume_key_from_epoch(
+    master_key: &[u8; 32], epoch_obf: u64,
+) -> [u8; 32] {
+    let sk = hmac::Key::new(hmac::HMAC_SHA512, master_key.as_slice());
+    let tag = hmac::sign(&sk, &epoch_obf.to_be_bytes());
+
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&tag.as_ref()[0..32]);
+    out
 }
 
 /// Parsed congestion snapshot carried in `cc_state`.
@@ -90,8 +115,8 @@ fn cc_algo_from_tag(t: u8) -> Result<CongestionControlAlgorithm> {
     }
 }
 
-/// Encodes [`ParsedCcState`] as `cc_state` version 1.
-pub fn encode_cc_state_v1(s: &ParsedCcState) -> Vec<u8> {
+/// Encodes [`ParsedCcState`] as `cc_state`.
+pub fn encode_cc_state(s: &ParsedCcState) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + 1 + 1 + 2 + 8 * 4);
     out.extend_from_slice(CC_STATE_MAGIC);
     out.push(CC_STATE_VERSION);
@@ -105,8 +130,8 @@ pub fn encode_cc_state_v1(s: &ParsedCcState) -> Vec<u8> {
     out
 }
 
-/// Decodes a version 1 `cc_state` blob.
-pub fn decode_cc_state_v1(data: &[u8]) -> Result<ParsedCcState> {
+/// Decodes a `cc_state` blob.
+pub fn decode_cc_state(data: &[u8]) -> Result<ParsedCcState> {
     if data.len() < 40 {
         return Err(Error::InvalidFrame);
     }
@@ -137,11 +162,11 @@ pub fn decode_cc_state_v1(data: &[u8]) -> Result<ParsedCcState> {
 
 /// Builds the authentication tag bytes placed in the `Hash` frame field.
 ///
-/// The tag is `HMAC-SHA256(k, epoch_be || cc_state)`.
+/// The tag is `HMAC-SHA512(k, epoch_be || cc_state)`.
 pub fn compute_cc_resume_mac(
     key: &[u8; 32], epoch: u64, cc_state: &[u8],
 ) -> Vec<u8> {
-    let sk = hmac::Key::new(hmac::HMAC_SHA256, key.as_slice());
+    let sk = hmac::Key::new(hmac::HMAC_SHA512, key.as_slice());
     let mut ctx = hmac::Context::with_key(&sk);
     ctx.update(&epoch.to_be_bytes());
     ctx.update(cc_state);
@@ -160,13 +185,21 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 pub fn verify_cc_resume_mac(
     key: &[u8; 32], epoch: u64, cc_state: &[u8], tag: &[u8],
 ) -> bool {
+    if tag.is_empty() {return false;}
+
     let expected = compute_cc_resume_mac(key, epoch, cc_state);
-    constant_time_eq(expected.as_slice(), tag)
+    if tag.len() > expected.len() {return false;}
+    // Compares the expected tag (truncated to the provided tag length) 
+    // with the given tag in constant time to prevent timing attacks.
+    constant_time_eq(&expected.as_slice()[..tag.len()], tag)
 }
+
+/// Maximum supported hash length (bytes) for CC resume MAC.
+pub const CC_RESUME_HASH_MAX_LEN: usize = 64;
 
 /// Maximum age of `wall_time_ms` in [`ParsedCcState`] for accepting a resume
 /// (server MAY ignore stale state).
-pub const CC_RESUME_MAX_STATE_AGE_MS: u64 = 7 * 24 * 3600 * 1000;
+pub const CC_RESUME_MAX_STATE_AGE_MS: u64 = 24 * 3600 * 1000;
 
 /// Returns current UNIX time in milliseconds (best effort).
 pub fn wall_time_ms_now() -> u64 {

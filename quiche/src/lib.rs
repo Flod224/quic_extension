@@ -4807,6 +4807,10 @@ impl<F: BufFactory> Connection<F> {
                                 self.cc_indication_epoch.saturating_add(1);
 
                             let epoch = self.cc_indication_epoch;
+                            let epoch_obf = cc_resume::obfuscate_epoch(
+                                epoch,
+                                &self.cc_resume_hmac_key,
+                            );
 
                             let parsed = cc_resume::ParsedCcState {
                                 wall_time_ms: cc_resume::wall_time_ms_now(),
@@ -4816,17 +4820,23 @@ impl<F: BufFactory> Connection<F> {
                                 cc_algorithm: self.recovery_config.cc_algorithm,
                             };
 
-                            let cc_state = cc_resume::encode_cc_state_v1(&parsed);
+                            let cc_state = cc_resume::encode_cc_state(&parsed);
 
-                            let hash = cc_resume::compute_cc_resume_mac(
-                                &self.cc_resume_hmac_key,
-                                epoch,
+                            let derived_key =
+                                cc_resume::derive_cc_resume_key_from_epoch(
+                                    &self.cc_resume_hmac_key,
+                                    epoch_obf,
+                                );
+
+                            let hash: Vec<u8> = cc_resume::compute_cc_resume_mac(
+                                &derived_key,
+                                epoch_obf,
                                 &cc_state,
                             );
 
                             self.cc_indication_to_send =
                                 Some(ServerCongestionState {
-                                    epoch,
+                                    epoch: epoch_obf,
                                     cc_state,
                                     hash,
                                 });
@@ -8926,9 +8936,17 @@ impl<F: BufFactory> Connection<F> {
                 // Server must only process the first incoming CC_RESUME and
                 // silently ignore further ones.
                 if self.cc_resume_processed.is_none() {
-                    if hash.len() == 32 {
+                    if !hash.is_empty() &&
+                        hash.len() <= cc_resume::CC_RESUME_HASH_MAX_LEN
+                    {
+                        let derived_key =
+                            cc_resume::derive_cc_resume_key_from_epoch(
+                                &self.cc_resume_hmac_key,
+                                epoch,
+                            );
+
                         if let Ok(parsed) =
-                            cc_resume::decode_cc_state_v1(&cc_state)
+                            cc_resume::decode_cc_state(&cc_state)
                         {
                             let not_expired = cc_resume::cc_state_not_expired(
                                 parsed.wall_time_ms,
@@ -8940,7 +8958,7 @@ impl<F: BufFactory> Connection<F> {
                                     self.recovery_config.cc_algorithm;
 
                             let hash_valid = cc_resume::verify_cc_resume_mac(
-                                &self.cc_resume_hmac_key,
+                                &derived_key,
                                 epoch,
                                 &cc_state,
                                 &hash,

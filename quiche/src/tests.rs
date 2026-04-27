@@ -7141,6 +7141,44 @@ fn cc_resume_replay_is_ignored_after_first(
 }
 
 #[rstest]
+fn cc_resume_epoch_tamper_is_ignored(
+    #[values("cubic", "bbr2_gcongestion")] cc_algorithm_name: &str,
+) {
+    let mut config = test_utils::Pipe::default_config(cc_algorithm_name).unwrap();
+    config.enable_server_congestion_resume(true);
+
+    let mut pipe = test_utils::Pipe::with_config(&mut config).unwrap();
+    pipe.handshake().unwrap();
+
+    pipe.server.stream_send(1, b"x", false).unwrap();
+    let flight = test_utils::emit_flight(&mut pipe.server).unwrap();
+    test_utils::process_flight(&mut pipe.client, flight).unwrap();
+
+    let stored = pipe.client.server_congestion_resume_state().unwrap();
+
+    let mut config2 = test_utils::Pipe::default_config(cc_algorithm_name).unwrap();
+    config2.enable_server_congestion_resume(true);
+
+    let mut pipe2 = test_utils::Pipe::with_config(&mut config2).unwrap();
+    pipe2.handshake().unwrap();
+
+    let frames = [frame::Frame::CcResume {
+        epoch: stored.epoch ^ 1,
+        cc_state: stored.cc_state.clone(),
+        hash: stored.hash.clone(),
+    }];
+
+    let mut buf = [0; 2000];
+    assert!(
+        pipe2
+            .send_pkt_to_server(Type::Short, &frames, &mut buf)
+            .is_ok()
+    );
+
+    assert_eq!(pipe2.server.server_congestion_resume_applied_state(), None);
+}
+
+#[rstest]
 fn cc_resume_expired_state_is_ignored(
     #[values("cubic", "bbr2_gcongestion")] cc_algorithm_name: &str,
 ) {
@@ -7158,12 +7196,16 @@ fn cc_resume_expired_state_is_ignored(
     let stored = pipe.client.server_congestion_resume_state().unwrap();
 
     // Forge an expired, but MAC-valid state for client.
-    let mut parsed = cc_resume::decode_cc_state_v1(&stored.cc_state).unwrap();
+    let mut parsed = cc_resume::decode_cc_state(&stored.cc_state).unwrap();
     parsed.wall_time_ms = 0;
 
-    let expired_cc_state = cc_resume::encode_cc_state_v1(&parsed);
-    let expired_hash = cc_resume::compute_cc_resume_mac(
+    let expired_cc_state = cc_resume::encode_cc_state(&parsed);
+    let derived_key = cc_resume::derive_cc_resume_key_from_epoch(
         &cc_resume::default_cc_resume_hmac_key(),
+        stored.epoch,
+    );
+    let expired_hash = cc_resume::compute_cc_resume_mac(
+        &derived_key,
         stored.epoch,
         &expired_cc_state,
     );
