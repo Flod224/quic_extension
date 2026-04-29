@@ -104,9 +104,9 @@ But: couvrir les cas attaques/erreurs demandes.
 
 Checklist:
 - [x] hash recalcule cote serveur
-- [x] hash invalide ignore silencieusement
-- [x] etat expire potentiellement ignore
-- [x] tests attaques (forge, replay, multi-resume)
+- [x] hash invalide ignoré silencieusement
+- [x] etat expire potentiellement ignoré
+- [x] tests d'attaques (forge, replay, multi-resume)
 
 
     `Comportement serveur durci pour CC_RESUME dans lib.rs:

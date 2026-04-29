@@ -1,0 +1,178 @@
+\documentclass[11pt, a4paper,titlepage]{report}
+% !BIB program = biber
+
+\input{mypackages}
+\makeatletter
+\renewcommand\thesection{\arabic{section}}
+\renewcommand\thesubsection{\thesection.\arabic{subsection}}
+\renewcommand\thesubsubsection{\thesubsection.\arabic{subsubsection}}
+\makeatother
+
+
+\begin{document}
+%Personnalisation des listes 
+\renewcommand{\labelitemi}{$\bullet$} 
+\input{sections/umons-coverpage-test}
+\tableofcontents 
+
+\vspace{1em}
+
+\section*{Executive Summary}
+This document describes the implementation, validation and evaluation of a
+"server congestion resume" extension for QUIC. The extension enables a client
+to present to a server the most recently advertised congestion control state
+from a previous connection, allowing the server to adopt a warmed congestion
+window. The implementation is provided in the modified `quiche` codebase. The
+report explains design choices, security considerations, test results and the
+cryptographic binding used to protect against forgery and large-scale replay
+without server-side storage.
+
+\section{Introduction}
+The project implements a QUIC transport parameter (`enable_server_congestion_resume`)
+and two new frames: `CC_INDICATION` and `CC_RESUME`. The server periodically
+advertises its internal congestion control snapshot using `CC_INDICATION`. The
+client stores the most recent advertisement and can send it once at the start
+of a subsequent connection using `CC_RESUME`. The server may accept or reject
+the proposed state.
+
+This report documents the implementation, how to run the client and server,
+security mitigations against forgery and replay, and an initial quantitative
+evaluation in a high BDP (bandwidth-delay product) scenario.
+
+\section{Design and Implementation}
+The chosen representation for the congestion control state is compact and
+portable. The state contains the server wall time, the congestion window in
+bytes, the smoothed RTT in nanoseconds, the delivery rate in bits per second,
+and a one-byte algorithm tag identifying the congestion control implementation
+(Reno, CUBIC or BBRv2). The payload format is a simple binary versioned blob
+with a 4-byte magic header `QCCR` and a single version byte.
+
+To provide integrity and authenticity, the state is authenticated using
+HMAC-SHA512. The MAC is computed over the concatenation of a obfuscated `epoch`
+value and the `cc_state` blob. The implementation supports configuring the
+HMAC key; a hard-coded default key exists for testing only. All verification
+uses a constant-time comparison. The hash length on the wire is dynamic and is
+validated against the received `Hash Length` field, allowing future migration
+to different hash sizes without additional server-side state.
+
+To avoid long-lived replay attacks without server storage, the implementation
+adds an epoch obfuscation step and derives a per-epoch key from the master key
+and the obfuscated epoch. The derived key is used to compute the HMAC, so the
+MAC is bound to the epoch value as sent on the wire. This approach preserves
+statelessness while strengthening resistance to large-scale replay.
+
+On the server side the implementation emits `CC_INDICATION` frames only when
+the congestion snapshot changes significantly (cwnd change >20\%, delivery rate
+change >10\%, RTT change >10\% or cwnd doubling) and enforces a minimum
+interval of 50 ms between advertisements. On the client side a single stored
+state can be injected with `CC_RESUME` during the first 1-RTT packet of the
+connection. The server processes only the first `CC_RESUME` and ignores further
+ones.
+
+All code changes were done with minimal disturbance to existing modules. The
+new code is implemented under the `cc_resume` module, with small integration
+points in the `Connection` send and receive paths.
+
+\section{Security and Cryptographic Binding}
+The basic HMAC prevents simple forging of `cc_state` blobs. However, a client
+or an on-path attacker could replay a previously observed `CC_INDICATION`
+into another connection within the validity window. Because the specification
+explicitly forbids server-side storage of the advertised state, the binding
+must remain stateless. The implementation addresses this by (1) obfuscating
+the epoch using a reversible XOR mask derived from the master key, and (2)
+deriving a per-epoch key using HMAC-SHA512 over the obfuscated epoch. The
+server recomputes the derived key from the received epoch and verifies the
+MAC. This keeps verification stateless and ties the MAC to the on-wire epoch.
+
+The design still relies on expiration to limit replay windows; a validity
+period of 24 hours is enforced by comparing the embedded wall-clock value
+with the current time. This limit provides a clear upper bound for replay
+feasibility while preserving compatibility with multi-connection workflows.
+
+\subsection*{Illustrative Code Snippets}
+\begin{verbatim}
+// Derive per-epoch key from the obfuscated epoch (stateless)
+let derived_key = derive_cc_resume_key_from_epoch(master_key, epoch_obf);
+
+// Compute MAC with HMAC-SHA512 over epoch_obf || cc_state
+let mac = compute_cc_resume_mac(&derived_key, epoch_obf, &cc_state);
+\end{verbatim}
+
+\section{Tests and Results}
+All implemented tests are unit-level and cover normal operation and attack
+cases. The main tests included are:
+\begin{itemize}
+  \item `cc_indication_is_stored_and_resumed`: end-to-end flow verification
+  \item `cc_resume_invalid_hash_is_ignored`: forged MAC is ignored
+  \item `cc_resume_replay_is_ignored_after_first`: replay of a second
+    `CC_RESUME` is ignored after the first application
+  \item `cc_resume_expired_state_is_ignored`: expired state is ignored
+  \item `cc_resume_epoch_tamper_is_ignored`: epoch tampering breaks MAC
+\end{itemize}
+
+Figures below show selected test outputs and packet captures.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.9\textwidth]{test_ccindication&cc_resume.png}
+  \caption{End-to-end functional test. The server emits `CC_INDICATION` in
+    1-RTT, the client stores the latest state, and the next connection resumes
+    using `CC_RESUME`.}
+\end{figure}
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.9\textwidth]{test_cc_indication&cc_resume_2.png}
+  \caption{Advertisement timeline. The epoch increases monotonically and is
+    obfuscated on the wire; the server derives the MAC key from the received
+    epoch to validate the resume frame.}
+\end{figure}
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.9\textwidth]{tests_robustness.png}
+  \caption{Robustness tests. Invalid hashes, expired states, replayed
+    `CC_RESUME`, and epoch tampering are all ignored without closing the
+    connection.}
+\end{figure}
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.9\textwidth]{Extension enabled verif wireshark.png}
+  \caption{Wire-level trace. The transport parameter negotiation is visible
+    and the `CC_INDICATION` frame appears in a 1-RTT packet with a hash length
+    matching the HMAC-SHA512 output.}
+\end{figure}
+
+\section{Quantitative Evaluation}
+An initial analysis for a high BDP scenario (satellite-like link with 500 ms
+RTT and 100 Mbps bandwidth) is provided. With resume enabled, restoring a
+several-megabyte congestion window immediately removes the slow-start ramp
+that would otherwise consume multiple RTTs. A conservative example in the
+report shows a potential order-of-magnitude improvement in utilization during
+the first second after connection establishment. The report contains a short
+validation plan to measure these gains using traffic shaping and repeated runs.
+
+\section{Integration with QLOG}
+For effective debugging and validation the transport parameter `enable_server_congestion_resume`
+must be recorded in QLOG as a named field rather than an unknown parameter.
+This makes traces readable and avoids misclassification by qlog consumers. In a
+subsequent commit the QLOG schema will be extended with a boolean field in the
+`ParametersSet` structure and the frame enum will include `CcIndication` and
+`CcResume` event variants.
+
+\section{Limitations and Future Work}
+The current implementation enforces the core security checks (HMAC verification,
+expiration, algorithm matching and single-apply policy) and derives a per-epoch
+MAC key from the obfuscated epoch. The following improvements remain:
+\begin{itemize}
+  \item Add QLOG schema changes so the transport parameter and frames are
+    logged as named fields (not unknown parameters).
+  \item Implement server-side rate limiting for repeated CC_RESUME attempts
+    to reduce DoS risk.
+  \item Extend evaluation with an automated test harness and traffic shaping
+    to produce the throughput curves used in the quantitative analysis.
+\end{itemize}
+
+\printbibliography[heading=bibintoc,title={Bibliography}]
+\end{document}
