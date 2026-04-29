@@ -606,8 +606,8 @@ pub struct Config {
 
     initial_rtt: Duration,
 
-    /// Key for HMAC-SHA256 over `CC_INDICATION` / `CC_RESUME` payloads.
-    cc_resume_hmac_key: [u8; 32],
+    /// Key for HMAC-SHA512 over `CC_INDICATION` / `CC_RESUME` payloads.
+    cc_resume_hmac_key: [u8; 64],
 }
 
 // See https://quicwg.org/base-drafts/rfc9000.html#section-15
@@ -906,12 +906,12 @@ impl Config {
         self.initial_rtt = v;
     }
 
-    /// Sets the HMAC-SHA256 key used for server congestion resume
+    /// Sets the HMAC-SHA512 key used for server congestion resume
     /// (`CC_INDICATION` / `CC_RESUME`) authentication.
     ///
     /// Production deployments should set an explicit secret; the built-in
     /// default exists for testing only.
-    pub fn set_cc_resume_hmac_key(&mut self, key: [u8; 32]) {
+    pub fn set_cc_resume_hmac_key(&mut self, key: [u8; 64]) {
         self.cc_resume_hmac_key = key;
     }
 
@@ -1414,7 +1414,7 @@ where
     cc_resume_processed: Option<ServerCongestionState>,
 
     /// HMAC key for server congestion resume (copied from [`Config`]).
-    cc_resume_hmac_key: [u8; 32],
+    cc_resume_hmac_key: [u8; 64],
 
     /// Last `epoch` sent in `CC_INDICATION` (next frame uses `+ 1`).
     cc_indication_epoch: u64,
@@ -8972,11 +8972,7 @@ impl<F: BufFactory> Connection<F> {
                                 path.recovery.apply_resume_cwnd(cwnd_bytes);
 
                                 self.cc_resume_processed =
-                                    Some(ServerCongestionState {
-                                        epoch,
-                                        cc_state,
-                                        hash,
-                                    });
+                                    Some(ServerCongestionState {epoch,cc_state,hash,});
                             }
                         }
                     }

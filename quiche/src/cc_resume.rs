@@ -43,18 +43,18 @@ pub const CC_STATE_VERSION: u8 = 1;
 
 /// Default HMAC key material when [`crate::Config::set_cc_resume_hmac_key`] is
 /// not used. **Deployable services should set an explicit key** via config.
-pub fn default_cc_resume_hmac_key() -> [u8; 32] {
+pub fn default_cc_resume_hmac_key() -> [u8; 64] {
     let d = digest::digest(
         &digest::SHA512,
         b"quiche cc resume default hmac do not use in production",
     );
 
-    let mut k = [0u8; 32];
-    k.copy_from_slice(&d.as_ref()[0..32]);
+    let mut k = [0u8; 64];
+    k.copy_from_slice(d.as_ref());
     k
 }
 /// Derives the XOR mask for obfuscating the epoch from the master key.
-fn epoch_mask(key: &[u8; 32]) -> u64 {
+fn epoch_mask(key: &[u8; 64]) -> u64 {
     let sk = hmac::Key::new(hmac::HMAC_SHA512, key.as_slice());
     let tag = hmac::sign(&sk, b"cc-resume-epoch");
     u64::from_be_bytes(tag.as_ref()[0..8].try_into().unwrap()) &
@@ -62,19 +62,19 @@ fn epoch_mask(key: &[u8; 32]) -> u64 {
 }
 
 /// Obfuscates the wire epoch using a reversible XOR mask.
-pub fn obfuscate_epoch(epoch: u64, key: &[u8; 32]) -> u64 {
+pub fn obfuscate_epoch(epoch: u64, key: &[u8; 64]) -> u64 {
     (epoch & octets::MAX_VAR_INT) ^ epoch_mask(key)
 }
 
 /// Derives a per-epoch key from the master key and the obfuscated epoch.
 pub fn derive_cc_resume_key_from_epoch(
-    master_key: &[u8; 32], epoch_obf: u64,
-) -> [u8; 32] {
+    master_key: &[u8; 64], epoch_obf: u64,
+) -> [u8; 64] {
     let sk = hmac::Key::new(hmac::HMAC_SHA512, master_key.as_slice());
     let tag = hmac::sign(&sk, &epoch_obf.to_be_bytes());
 
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&tag.as_ref()[0..32]);
+    let mut out = [0u8; 64];
+    out.copy_from_slice(tag.as_ref());
     out
 }
 
@@ -164,7 +164,7 @@ pub fn decode_cc_state(data: &[u8]) -> Result<ParsedCcState> {
 ///
 /// The tag is `HMAC-SHA512(k, epoch_be || cc_state)`.
 pub fn compute_cc_resume_mac(
-    key: &[u8; 32], epoch: u64, cc_state: &[u8],
+    key: &[u8; 64], epoch: u64, cc_state: &[u8],
 ) -> Vec<u8> {
     let sk = hmac::Key::new(hmac::HMAC_SHA512, key.as_slice());
     let mut ctx = hmac::Context::with_key(&sk);
@@ -183,7 +183,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// Returns `true` if `tag` is a valid MAC for `epoch` and `cc_state`.
 pub fn verify_cc_resume_mac(
-    key: &[u8; 32], epoch: u64, cc_state: &[u8], tag: &[u8],
+    key: &[u8; 64], epoch: u64, cc_state: &[u8], tag: &[u8],
 ) -> bool {
     if tag.is_empty() {return false;}
 
